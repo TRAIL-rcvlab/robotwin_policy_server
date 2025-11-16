@@ -1,0 +1,14 @@
+# Basic experiment configuration
+policy_name: null
+task_name: move_banana_to_box_rdt
+task_config: demo_clean
+ckpt_setting: RDT_demo_clean
+seed: null
+instruction_type: unseen
+policy_conda_env: null
+
+checkpoint_id: 20000
+left_arm_dim: 7
+right_arm_dim: 7
+rdt_step: 8
+expert_data_num: 30

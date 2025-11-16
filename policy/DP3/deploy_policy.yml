@@ -1,0 +1,16 @@
+# Basic experiment configuration (keep unchanged)
+policy_name: null
+task_name: move_banana_to_box_dp3   # need
+task_config: demo_clean
+ckpt_setting: demo_clean          # need
+seed: 0                           # need
+instruction_type: unseen
+
+# Add Parameters You Need
+config_name: robot_dp3
+checkpoint_num: 5000              # need
+dp3_task: demo_task
+expert_data_num: 30               # need
+use_rgb: false
+# use_rgb: true
+# ckpt_path: /workspace/policy/DP3/checkpoints/move_banana_to_box_dp3-demo_clean-26_0

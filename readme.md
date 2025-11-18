@@ -2,214 +2,9 @@
 
 ## Gello
 
-> 直接拷贝电脑上的gello文件夹即可
+直接拷贝电脑上的gello文件夹即可
 
-
-
-```bash
-git clone https://github.com/wuphilipp/gello_software.git 
-cd gello_software
-```
-
-
-
-更新子模块
-
-```bash
-git submodule update --init --recursive
-```
-
-
-
-安装依赖
-
-```bash
-pip install -r requirements.txt
-pip install -e .
-pip install -e third_party/DynamixelSDK/python
-```
-
-
-
-## 构建docker
-
-Dockerfile（上一代版本）
-
-```dockerfile
-# 使用 NVIDIA 官方 CUDA 12.1 开发镜像（Ubuntu 22.04）
-FROM nvidia/cuda:12.1.1-devel-ubuntu22.04
-
-# 设置非交互式安装 & 环境变量
-ENV DEBIAN_FRONTEND=noninteractive \
-    PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PATH="/root/.local/bin:${PATH}"
-
-# 安装系统依赖（包括 Python 3.10 和编译工具）
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3.10 \
-    python3.10-dev \
-    python3-pip \
-    build-essential \
-    git \
-    curl \
-    wget \
-    libgl1-mesa-glx \
-    libglib2.0-0 \
-    libsm6 \
-    libxext6 \
-    libxrender-dev \
-    libgomp1 \
-    ffmpeg \
-    libavcodec-dev \
-    libavformat-dev \
-    libswscale-dev \
-    libv4l-dev \
-    vulkan-tools \
-    libvulkan1 \
-    libvulkan-dev \
-    mesa-vulkan-drivers \
-    ninja-build \
-    && rm -rf /var/lib/apt/lists/*
-
-# 升级 pip 并设置 python3.10 为默认 python
-RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1 && \
-    python3 -m pip install --upgrade pip && \
-    pip install --no-cache-dir --upgrade setuptools wheel
-
-# 创建工作目录
-WORKDIR /workspace
-COPY . /workspace
-
-# 安装 PyTorch (CUDA 12.1) 和其他 Python 依赖
-RUN pip install --no-cache-dir torch==2.4.1+cu121 torchvision --index-url https://download.pytorch.org/whl/cu121 && \
-    pip install --no-cache-dir -r script/requirements.txt
-
-# 安装 pytorch3d 从whl包
-COPY pytorch3d-0.7.8-cp310-cp310-linux_x86_64.whl /tmp/
-RUN pip install --no-cache-dir /tmp/pytorch3d-0.7.8-cp310-cp310-linux_x86_64.whl > error.txt 2>&1
-
-# 设置 CUDA 架构 A6000
-ENV TORCH_CUDA_ARCH_LIST="8.6+PTX"  
-# 安装 Curobo
-RUN cd envs && git clone https://github.com/NVlabs/curobo.git && \
-    cd curobo && pip install -e . --no-build-isolation
-
-# 默认启动 shell
-CMD ["/bin/bash"]
-```
-
-entrypoint.sh
-
-```bash
-#!/bin/bash
-set -e
-
-echo "🔧 [Entrypoint] Starting RoboTwin container initialization..."
-
-# =============== 1. Ensure 'python' command exists ===============
-if ! command -v python &> /dev/null; then
-    if command -v python3 &> /dev/null; then
-        echo "🔗 Creating 'python' symlink to python3..."
-        ln -sf "$(which python3)" /usr/local/bin/python
-    else
-        echo "❌ Neither python nor python3 found!"
-        exit 1
-    fi
-fi
-
-# =============== 2. Patch SAPIEN URDF loader ===============
-echo "🔧 Patching SAPIEN URDF loader for UTF-8 support..."
-# location of sapien, like "~/.conda/envs/RoboTwin/lib/python3.10/site-packages/sapien"
-SAPIEN_LOCATION=$(python -c "import sapien; print(sapien.__file__.rsplit('/', 1)[0])")
-URDF_LOADER="$SAPIEN_LOCATION/wrapper/urdf_loader.py"
-# ----------- before -----------
-# 667         with open(urdf_file, "r") as f:
-# 668             urdf_string = f.read()
-# 669 
-# 670         if srdf_file is None:
-# 671             srdf_file = urdf_file[:-4] + "srdf"
-# 672         if os.path.isfile(srdf_file):
-# 673             with open(srdf_file, "r") as f:
-# 674                 self.ignore_pairs = self.parse_srdf(f.read())
-# ----------- after  -----------
-# 667         with open(urdf_file, "r", encoding="utf-8") as f:
-# 668             urdf_string = f.read()
-# 669 
-# 670         if srdf_file is None:
-# 671             srdf_file = urdf_file[:-4] + ".srdf"
-# 672         if os.path.isfile(srdf_file):
-# 673             with open(srdf_file, "r", encoding="utf-8") as f:
-# 674                 self.ignore_pairs = self.parse_srdf(f.read())
-if [ -f "$URDF_LOADER" ]; then
-    sed -i -E 's/("r")(\))( as)/\1, encoding="utf-8") as/g' $URDF_LOADER
-    echo "✅ SAPIEN patched: $URDF_LOADER"
-else
-    echo "⚠️  SAPIEN urdf_loader.py not found at $URDF_LOADER"
-fi
-
-# =============== 3. Patch MPLIB planner ===============
-echo "🔧 Patching MPLIB planner to disable collision check in screw planning..."
-# location of mplib, like "~/.conda/envs/RoboTwin/lib/python3.10/site-packages/mplib"
-MPLIB_LOCATION=$(python -c "import mplib; print(mplib.__file__.rsplit('/', 1)[0])")
-PLANNER="$MPLIB_LOCATION/planner.py"
-# Adjust some code in planner.py
-# ----------- before -----------
-# 807             if np.linalg.norm(delta_twist) < 1e-4 or collide or not within_joint_limit:
-# 808                 return {"status": "screw plan failed"}
-# ----------- after  ----------- 
-# 807             if np.linalg.norm(delta_twist) < 1e-4 or not within_joint_limit:
-# 808                 return {"status": "screw plan failed"}
-if [ -f "$PLANNER" ]; then
-    sed -i -E 's/(if np.linalg.norm\(delta_twist\) < 1e-4 )(or collide )(or not within_joint_limit:)/\1\3/g' $PLANNER
-    echo "✅ MPLIB patched: $PLANNER"
-else
-    echo "⚠️  MPLIB planner.py not found at $PLANNER"
-fi
-
-# =============== 4. Update embodiment config paths ===============
-echo "🔄 Updating embodiment config paths using ASSETS_PATH=${ASSETS_PATH:-/workspace}..."
-cd /workspace
-if [ -f "script/update_embodiment_config_path.py" ]; then
-    python script/update_embodiment_config_path.py
-else
-    echo "⚠️  update_embodiment_config_path.py not found, skipping..."
-fi
-
-echo "✅ [Entrypoint] Initialization complete!"
-
-# 执行用户传入的命令（如 bash、python 等）
-exec "$@"
-```
-
-> dockerfile 和 entrypoint 都在旧机器上，旧机器的固态硬盘炸了（此处丢失了
->
-> entrypoint 里有对环境进行打补丁的修复（例如碰撞判断删除）
-
-
-
-在自己机器上 build
-
-```bash
-docker build -t robotwin:cu121-py310 .
-```
-
-
-
-导出镜像
-
-```bash
-docker save -o robotwin_images.tar.gz robotwin:cu121-py310
-```
-
-
-
-服务器上导入镜像
-
-```bash
-blzou@rcvlab-A6000x4-0:/data2/blzou/docker_images$ docker load -i robotwin_images.tar.gz
-```
-
+注意修改 deploy 脚本中的 gello 路径
 
 
 ## docker使用脚本
@@ -232,31 +27,6 @@ blzou@rcvlab-A6000x4-0:/data2/blzou/docker_images$ docker load -i robotwin_image
 ```bash
 ./script/_delete_docker.sh
 ```
-
-
-
-# 数据集下载
-
-```bash
-bash script/_download_assets.sh
-```
-
-已经下载到`/data2/blzou/dataset/robotwin/assets`
-
-
-
-```bash
-assets
-├── background_texture
-├── embodiments
-│   ├── embodiment_1
-│   │   ├── config.yml
-│   │   └── ...
-│   └── ...
-├── objects
-└── ...
-```
-
 
 
 
@@ -321,6 +91,10 @@ bash process_data.sh beat_block_hammer demo_clean 5
 > 包含点云的数据
 >
 > 需要修改内参和scal
+
+数据集需要放在 `/data2/blzou/dataset/robotwin/data_real`
+
+数据集操作路径是在docker里的 `/workspace/data_real` 下的 scripts
 
 真机采集数据 .pkl 转换为 Robotwin格式的 .hdf5 文件
 
@@ -553,6 +327,10 @@ huggingface-cli download robotics-diffusion-transformer/rdt-1b --local-dir rdt-1
 
 
 ## 数据集转换（ours
+
+数据集需要放在 `/data2/blzou/dataset/robotwin/data_real`
+
+路径是在docker里的 `/workspace/data_real` 下的 scripts
 
 .pkl 转 .hdf5
 
